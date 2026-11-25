@@ -1,0 +1,12 @@
+{
+  "token": "ここに Bot トークンを入れる",
+  "base_url": "https://あなたのマシン名.tailxxxx.ts.net",
+  "listen_host": "127.0.0.1",
+  "listen_port": 8080,
+  "max_file_mb": 2048,
+  "keep_days": 7,
+  "upload_link_minutes": 10,
+  "min_free_disk_mb": 2048,
+  "max_user_total_mb": 10240,
+  "allowed_guild_ids": []
+}

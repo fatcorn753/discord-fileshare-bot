@@ -1,0 +1,20 @@
+# install.sh が __USER__ と __DIR__ を置き換えて /etc/systemd/system/ に入れる
+[Unit]
+Description=tailshare (Discord file sharing bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/.venv/bin/python -u main.py
+Restart=always
+RestartSec=10
+# ファイルの置き場(data/)以外への書き込みを防ぐ
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=__DIR__/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

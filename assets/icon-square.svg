@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- tailshare のアイコン。zip の書類が、尾を引いて仲間へ渡っていく形 -->
+  <rect width="512" height="512" fill="#4e6a38"/>
+  <!-- 尾: 書類の左下から流れ出る 2 本の線 -->
+  <path d="M182 374 C 150 388, 128 402, 102 414" fill="none" stroke="#93b879" stroke-width="30" stroke-linecap="round"/>
+  <path d="M184 302 C 154 305, 132 313, 112 324" fill="none" stroke="#93b879" stroke-width="22" stroke-linecap="round" opacity="0.75"/>
+  <!-- 書類 -->
+  <path d="M212 96 H330 L410 176 V392 A28 28 0 0 1 382 420 H212 A28 28 0 0 1 184 392 V124 A28 28 0 0 1 212 96 Z" fill="#f7f5ec"/>
+  <!-- 折り返した角 -->
+  <path d="M330 96 V148 A28 28 0 0 0 358 176 H410 Z" fill="#c9d8bb"/>
+  <!-- zip の歯 -->
+  <g fill="#4e6a38">
+    <rect x="262" y="120" width="34" height="20" rx="6"/>
+    <rect x="290" y="152" width="34" height="20" rx="6"/>
+    <rect x="262" y="184" width="34" height="20" rx="6"/>
+    <rect x="290" y="216" width="34" height="20" rx="6"/>
+    <!-- 引き手 -->
+    <rect x="266" y="252" width="54" height="84" rx="16"/>
+  </g>
+  <rect x="282" y="290" width="22" height="30" rx="8" fill="#f7f5ec"/>
+</svg>

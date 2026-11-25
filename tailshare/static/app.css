@@ -1,0 +1,77 @@
+/* tailshare の画面。色・余白・形はデザインのトークンだけを使う */
+
+.ts-main {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--space-12) max(var(--space-4), env(safe-area-inset-left)) var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.ts-main h1 { font-size: var(--text-2xl); }
+.ts-filename { word-break: break-all; }
+
+.ts-lead { margin: 0; color: var(--text-secondary); }
+.ts-meta { margin: 0; color: var(--text-secondary); font-size: var(--text-sm); }
+
+.ts-stack { display: flex; flex-direction: column; gap: var(--gap-stack); }
+.ts-stack[hidden], .ts-progress[hidden] { display: none; }
+
+.ts-actions { display: flex; justify-content: flex-end; gap: var(--space-3); flex-wrap: wrap; }
+
+/* ファイルを置く場所。クリックでもキーボードでも選べるよう label にしている */
+.ts-drop {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-10) var(--pad-panel);
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-control);
+  border-radius: var(--shape-panel);
+  cursor: pointer;
+  transition: background-color var(--dur-instant) var(--ease-standard),
+              border-color var(--dur-instant) var(--ease-standard);
+}
+.ts-drop:hover, .ts-drop[data-over] { background: var(--bg-subtle); border-color: var(--accent-solid); }
+.ts-drop:has(input:focus-visible) { outline: var(--focus-ring); outline-offset: 2px; }
+.ts-drop[data-chosen] { border-style: solid; }
+.ts-drop[aria-disabled="true"] { cursor: default; }
+.ts-drop-title { font-weight: var(--weight-medium); word-break: break-all; }
+.ts-drop-sub { color: var(--text-secondary); font-size: var(--text-sm); }
+
+.ts-visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.ts-progress { display: flex; flex-direction: column; gap: var(--space-2); }
+.ts-progress progress {
+  width: 100%;
+  height: var(--space-2);
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+.ts-progress progress::-webkit-progress-bar { background: var(--bg-subtle); }
+.ts-progress progress::-webkit-progress-value { background: var(--accent-solid); }
+.ts-progress progress::-moz-progress-bar { background: var(--accent-solid); }
+
+.ts-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+}
+.ts-facts dt { color: var(--text-secondary); }
+.ts-facts dd { margin: 0; word-break: break-all; }
+.ts-facts code { font-family: var(--font-mono); font-size: var(--text-md); }
+.ts-facts a { color: var(--accent-text); }
+
+/* 部品の display 指定が hidden 属性より強いので、隠すときは明示する */
+.td-error[hidden], .td-btn[hidden] { display: none; }
