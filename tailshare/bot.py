@@ -1,4 +1,4 @@
-"""Discord 側。/アップ /受け取り /削除 /一覧 の 4 つのコマンドと、サーバーの許可。
+"""Discord 側。/アップ /受け取り /削除 /一覧 /help の 5 つのコマンドと、サーバーの許可。
 
 /アップ で対象を「個別」にすると相手を選ぶメニューが出て、合言葉と URL は選んだ人と本人にだけ DM で届く。
 
@@ -49,6 +49,37 @@ def pick_recipients(uploader_id: int, *users: discord.abc.User | None) -> tuple[
     """宛先の欄から、空欄・Bot・本人を除いた ID を重複なしで返す。"""
     ids = [u.id for u in users if u is not None and not u.bot and u.id != uploader_id]
     return tuple(dict.fromkeys(ids))
+
+
+def help_text(config: Config) -> str:
+    """導入したての人向けの使い方。上限や日数は設定から出す。"""
+    max_size = format_size(config.max_file_bytes)
+    return "\n".join(
+        [
+            "**ファイル共有 Bot の使い方**",
+            "",
+            "**共有する** `/アップ`",
+            "・10MB 以下: `ファイル` に添付すると、そのまま共有します。",
+            f"・大きいファイル(最大 {max_size}): 何も添付せずに実行すると、アップロード用のリンクが届きます。"
+            f"ブラウザで開いて送ってください。リンクはあなた専用で、{config.upload_link_minutes} 分以内に 1 回だけ使えます。",
+            "・`対象` を「個別」にすると相手を選べます。"
+            "合言葉と URL は選んだ人とあなたにだけ DM で届き、チャンネルには投稿しません。",
+            "",
+            "**受け取る** `/受け取り 合言葉`",
+            "・共有すると「kuma-sakura-42」のような合言葉が出ます。打つと、あなたにだけファイルか URL が届きます。",
+            "・共有の投稿にある URL をブラウザで開いても受け取れます。",
+            "",
+            "**見る・消す** `/一覧` `/削除 合言葉`",
+            "・消せるのは、共有した本人とサーバー管理の権限がある人です。",
+            "",
+            "**気をつけること**",
+            f"・ファイルは {config.keep_days} 日たつと自動で消えます。",
+            f"・1 人が置ける合計は {format_size(config.max_user_total_bytes)} までです。",
+            "・URL を知っている人は誰でもダウンロードできます。サーバーの外に貼らないでください。",
+            "・合言葉は、このサーバーの中だけで通じます。",
+            "・「このサーバーではまだ使えません」と出たら、Bot の持ち主の許可待ちです。",
+        ]
+    )
 
 
 def can_delete(shared: SharedFile, member: discord.Member | discord.User) -> bool:
@@ -197,6 +228,8 @@ class ShareBot(discord.Client):
     async def _check_guild(self, interaction: discord.Interaction) -> bool:
         if interaction.type is discord.InteractionType.component:
             return True  # 持ち主への DM のボタン。持ち主かどうかはボタン側で確かめる
+        if interaction.command is not None and interaction.command.name == "help":
+            return True  # 使い方は、許可前のサーバーや DM でも見られるようにする
         if interaction.guild_id is None or not self.is_allowed(interaction.guild_id):
             # 入力候補の問い合わせには文で返せないので、黙って断る
             if interaction.type is not discord.InteractionType.autocomplete:
@@ -434,6 +467,10 @@ def register_commands(bot: ShareBot) -> None:
             f"**{discord.utils.escape_markdown(shared.filename)}** を削除しました。URL ももう開けません。",
             ephemeral=shared.is_private,
         )
+
+    @tree.command(name="help", description="このBotの使い方を見る")
+    async def help_(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(help_text(config), ephemeral=True)
 
     @tree.command(name="一覧", description="このサーバーで共有中のファイルを見る")
     @app_commands.guild_only()

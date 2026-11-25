@@ -1,6 +1,6 @@
 import asyncio
 
-from tailshare.bot import GuildDecision, ShareBot, can_delete, describe, pick_recipients
+from tailshare.bot import GuildDecision, ShareBot, can_delete, describe, help_text, pick_recipients
 from tailshare.config import parse_config
 from tailshare.store import Store
 
@@ -31,7 +31,7 @@ def test_commands_register(tmp_path):
     assert button.item.custom_id == "tailshare:guild:deny:123"
     assert GuildDecision.__discord_ui_compiled_template__.fullmatch("tailshare:guild:allow:5")
     names = {c["name"] for c in payload}
-    assert names == {"アップ", "受け取り", "削除", "一覧"}
+    assert names == {"アップ", "受け取り", "削除", "一覧", "help"}
     up = next(c for c in payload if c["name"] == "アップ")
     assert [o["name"] for o in up["options"]] == ["ファイル", "対象"]
     assert [c["name"] for c in up["options"][1]["choices"]] == ["全員", "個別"]
@@ -75,3 +75,12 @@ def test_recipient_picker():
         return view.select.max_values, view.timeout
 
     assert asyncio.run(build()) == (25, 300)
+
+
+def test_help_text_uses_config():
+    raw = {"token": TOKEN, "base_url": "https://x", "keep_days": 3, "max_file_mb": 512, "upload_link_minutes": 15}
+    config = parse_config(raw)
+    text = help_text(config)
+    assert "3 日" in text and "512.0 MB" in text and "15 分" in text
+    assert all(f"/{name}" in text for name in ["アップ", "受け取り", "一覧", "削除"])
+    assert len(text) <= 2000  # Discord の 1 メッセージの上限
