@@ -1,4 +1,4 @@
-# tailshare
+# discord-fileshare-bot
 
 <img src="assets/icon.svg" width="96" height="96" alt="">
 
@@ -77,8 +77,8 @@ Discord ──(コマンド)──▶ Bot ┐
 ### 3. サーバーに置いて起動する
 
 ```bash
-git clone https://github.com/fatcorn753/tailshare.git
-cd tailshare
+git clone https://github.com/fatcorn753/discord-fileshare-bot.git
+cd discord-fileshare-bot
 cp config.example.json config.json
 nano config.json   # token と base_url を書く
 ./deploy/install.sh
