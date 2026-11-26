@@ -106,7 +106,7 @@
       }
       form.hidden = true;
       document.getElementById("done-name").textContent = data.filename;
-      document.getElementById("done-pass").textContent = data.passphrase;
+      document.getElementById("done-pass").textContent = data.passphrase || "なし";
       const link = document.getElementById("done-url");
       link.textContent = data.url;
       link.href = data.url;

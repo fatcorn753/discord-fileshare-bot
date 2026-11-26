@@ -25,11 +25,15 @@ log = logging.getLogger("tailshare.bot")
 NO_PING = discord.AllowedMentions.none()
 
 
+def passphrase_line(shared: SharedFile) -> str:
+    return f"合言葉: `{shared.passphrase}`" if shared.locked else "合言葉: なし"
+
+
 def describe(config: Config, shared: SharedFile) -> str:
     return (
         f"<@{shared.uploader_id}> が **{discord.utils.escape_markdown(shared.filename)}**"
         f"({format_size(shared.size)})を共有しました。\n"
-        f"合言葉: `{shared.passphrase}`\n"
+        f"{passphrase_line(shared)}\n"
         f"ダウンロード: {file_url(config, shared.id)}\n"
         f"期限: <t:{shared.expires_at}:f>(<t:{shared.expires_at}:R>)"
     )
@@ -39,7 +43,7 @@ def describe_private(config: Config, shared: SharedFile, guild_name: str) -> str
     return (
         f"<@{shared.uploader_id}> から、**{discord.utils.escape_markdown(guild_name)}** で "
         f"**{discord.utils.escape_markdown(shared.filename)}**({format_size(shared.size)})が個別に届きました。\n"
-        f"合言葉: `{shared.passphrase}`(そのサーバーで /受け取り に使えます)\n"
+        f"{passphrase_line(shared)}\n"
         f"ダウンロード: {file_url(config, shared.id)}\n"
         f"期限: <t:{shared.expires_at}:f>(<t:{shared.expires_at}:R>)"
     )
@@ -65,11 +69,14 @@ def help_text(config: Config) -> str:
             "・`対象` を「個別」にすると相手を選べます。"
             "合言葉と URL は選んだ人とあなたにだけ DM で届き、チャンネルには投稿しません。",
             "",
-            "**受け取る** `/受け取り 合言葉`",
-            "・共有すると「kuma-sakura-42」のような合言葉が出ます。打つと、あなたにだけファイルか URL が届きます。",
+            "・`合言葉` を「あり」にすると「kuma-sakura-neko-1234」のような合言葉が付き、"
+            "URL から落とすときに入力が要ります。省略すると合言葉なしです。",
+            "",
+            "**受け取る** `/受け取り`",
+            "・入力候補からファイルを選ぶか合言葉を打つと、あなたにだけファイルか URL が届きます。",
             "・共有の投稿にある URL をブラウザで開いても受け取れます。",
             "",
-            "**見る・消す** `/一覧` `/削除 合言葉`",
+            "**見る・消す** `/一覧` `/削除`",
             "・消せるのは、共有した本人とサーバー管理の権限がある人です。",
             "",
             "**気をつけること**",
@@ -258,7 +265,7 @@ class ShareBot(discord.Client):
         sent = [u for u in shared.recipients if u not in failed]
         lines = [
             f"**{discord.utils.escape_markdown(shared.filename)}** を個別に共有しました。チャンネルには投稿していません。",
-            f"合言葉: `{shared.passphrase}`",
+            passphrase_line(shared),
             f"ダウンロード: {file_url(self.config, shared.id)}",
         ]
         if sent:
@@ -295,13 +302,18 @@ def register_commands(bot: ShareBot) -> None:
     async def passphrase_choices(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         files = store.list_files(interaction.guild_id or 0, interaction.user.id)
         current = current.lower()
+
+        # 合言葉なしのファイルも、内部の合言葉を値にして選べるようにする(名前には出さない)
+        def label(f: SharedFile) -> str:
+            return (f"{f.passphrase}({f.filename})" if f.locked else f"(合言葉なし){f.filename}")[:100]
+
         return [
-            app_commands.Choice(name=f"{f.passphrase}({f.filename})"[:100], value=f.passphrase)
+            app_commands.Choice(name=label(f), value=f.passphrase)
             for f in files
-            if current in f.passphrase or current in f.filename.lower()
+            if (f.locked and current in f.passphrase) or current in f.filename.lower()
         ][:25]
 
-    def upload_link_text(interaction: discord.Interaction, recipients: tuple[int, ...]) -> str:
+    def upload_link_text(interaction: discord.Interaction, recipients: tuple[int, ...], locked: bool) -> str:
         assert interaction.guild_id is not None and interaction.channel_id is not None
         ticket = store.create_ticket(
             guild_id=interaction.guild_id,
@@ -309,11 +321,13 @@ def register_commands(bot: ShareBot) -> None:
             user_id=interaction.user.id,
             minutes=config.upload_link_minutes,
             recipients=recipients,
+            locked=locked,
         )
+        what = "合言葉と URL" if locked else "URL"
         after = (
-            f"送り終えると、選んだ {len(recipients)} 人とあなたに DM で合言葉と URL を届けます。"
+            f"送り終えると、選んだ {len(recipients)} 人とあなたに DM で{what}を届けます。"
             if recipients
-            else "送り終えると、このチャンネルに合言葉と URL を投稿します。"
+            else f"送り終えると、このチャンネルに{what}を投稿します。"
         )
         return (
             f"下のページからファイルを送ってください({format_size(config.max_file_bytes)} まで)。\n"
@@ -322,7 +336,7 @@ def register_commands(bot: ShareBot) -> None:
         )
 
     async def save_attachment(
-        interaction: discord.Interaction, attachment: discord.Attachment, recipients: tuple[int, ...]
+        interaction: discord.Interaction, attachment: discord.Attachment, recipients: tuple[int, ...], locked: bool
     ) -> SharedFile | None:
         assert interaction.guild_id is not None and interaction.channel_id is not None
         file_id, part = store.new_part_path()
@@ -341,17 +355,21 @@ def register_commands(bot: ShareBot) -> None:
             filename=clean_filename(attachment.filename),
             size=part.stat().st_size,
             recipients=recipients,
+            locked=locked,
         )
 
     async def share_privately(
-        interaction: discord.Interaction, attachment: discord.Attachment | None, recipients: tuple[int, ...]
+        interaction: discord.Interaction,
+        attachment: discord.Attachment | None,
+        recipients: tuple[int, ...],
+        locked: bool,
     ) -> None:
         """相手を選び終えたあとの処理。選択メニューのメッセージを結果に置き換える。"""
         if attachment is None:
-            await interaction.response.edit_message(content=upload_link_text(interaction, recipients), view=None)
+            await interaction.response.edit_message(content=upload_link_text(interaction, recipients, locked), view=None)
             return
         await interaction.response.edit_message(content="ファイルを受け取っています…", view=None)
-        shared = await save_attachment(interaction, attachment, recipients)
+        shared = await save_attachment(interaction, attachment, recipients, locked)
         if shared is None:
             await interaction.edit_original_response(content="ファイルを受け取れませんでした。もう一度送ってください。")
             return
@@ -362,14 +380,20 @@ def register_commands(bot: ShareBot) -> None:
     @app_commands.describe(
         ファイル="10MB 以下ならここに添付してもよい",
         対象="全員(チャンネルに投稿)か、個別(選んだ人にだけ DM で届ける)か。省略すると全員",
+        合言葉="あり にすると、URL から落とすときに合言葉の入力が要る。省略すると なし",
     )
-    @app_commands.choices(対象=[app_commands.Choice(name="全員", value="all"), app_commands.Choice(name="個別", value="private")])
+    @app_commands.choices(
+        対象=[app_commands.Choice(name="全員", value="all"), app_commands.Choice(name="個別", value="private")],
+        合言葉=[app_commands.Choice(name="あり", value="on"), app_commands.Choice(name="なし", value="off")],
+    )
     @app_commands.guild_only()
     async def up(
         interaction: discord.Interaction,
         ファイル: discord.Attachment | None = None,
         対象: app_commands.Choice[str] | None = None,
+        合言葉: app_commands.Choice[str] | None = None,
     ) -> None:
+        locked = 合言葉 is not None and 合言葉.value == "on"
         if ファイル is not None:
             if ファイル.size > config.max_file_bytes:
                 await interaction.response.send_message(
@@ -392,7 +416,7 @@ def register_commands(bot: ShareBot) -> None:
             return
 
         if 対象 is not None and 対象.value == "private":
-            picker = RecipientPicker(interaction, lambda i, r: share_privately(i, ファイル, r))
+            picker = RecipientPicker(interaction, lambda i, r: share_privately(i, ファイル, r, locked))
             await interaction.response.send_message(
                 "届ける相手を選んでください(複数選べます)。選んだ人とあなたにだけ DM で届き、チャンネルには投稿しません。",
                 view=picker,
@@ -401,17 +425,17 @@ def register_commands(bot: ShareBot) -> None:
             return
 
         if ファイル is None:
-            await interaction.response.send_message(upload_link_text(interaction, ()), ephemeral=True)
+            await interaction.response.send_message(upload_link_text(interaction, (), locked), ephemeral=True)
             return
         await interaction.response.defer(thinking=True)
-        shared = await save_attachment(interaction, ファイル, ())
+        shared = await save_attachment(interaction, ファイル, (), locked)
         if shared is None:
             await interaction.followup.send("ファイルを受け取れませんでした。もう一度送ってください。", ephemeral=True)
             return
         await interaction.followup.send(describe(config, shared))
 
-    @tree.command(name="受け取り", description="合言葉でファイルを受け取る")
-    @app_commands.describe(合言葉="共有したときに出た合言葉(例: kuma-sakura-42)")
+    @tree.command(name="受け取り", description="ファイルを受け取る(入力候補から選ぶか、合言葉を打つ)")
+    @app_commands.describe(合言葉="入力候補から選ぶか、共有したときに出た合言葉(例: kuma-sakura-neko-1234)を打つ")
     @app_commands.autocomplete(合言葉=passphrase_choices)
     @app_commands.guild_only()
     async def get(interaction: discord.Interaction, 合言葉: str) -> None:
@@ -447,7 +471,7 @@ def register_commands(bot: ShareBot) -> None:
         )
 
     @tree.command(name="削除", description="共有したファイルを消す(共有した本人か、サーバー管理の権限がある人だけ)")
-    @app_commands.describe(合言葉="消すファイルの合言葉")
+    @app_commands.describe(合言葉="入力候補から消すファイルを選ぶか、合言葉を打つ")
     @app_commands.autocomplete(合言葉=passphrase_choices)
     @app_commands.guild_only()
     async def delete(interaction: discord.Interaction, 合言葉: str) -> None:
@@ -481,7 +505,7 @@ def register_commands(bot: ShareBot) -> None:
             await interaction.response.send_message("共有中のファイルはありません。/アップ で共有できます。", ephemeral=True)
             return
         lines = [
-            f"`{f.passphrase}` **{discord.utils.escape_markdown(f.filename)}**"
+            f"{f'`{f.passphrase}`' if f.locked else '合言葉なし'} **{discord.utils.escape_markdown(f.filename)}**"
             f"({'個別・' if f.is_private else ''}{format_size(f.size)}・<@{f.uploader_id}>・<t:{f.expires_at}:R>に消える)"
             for f in files
         ]

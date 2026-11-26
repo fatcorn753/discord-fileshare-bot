@@ -2,7 +2,9 @@
 // Funnel は 1 本の接続あたりの速さが頭打ちになるので、本数を増やすと速くなる(fetch は 1 本にまとめられてしまう)。
 // 保存先へ直接書くには showSaveFilePicker が要るので、使えないブラウザでは今まで通りの 1 本のダウンロードになる。
 (() => {
-  const link = document.getElementById("dl");
+  const link = document.getElementById("dl"); // 合言葉なしはリンク、合言葉ありはフォームの送信ボタン
+  const form = document.getElementById("dl-form"); // 合言葉ありのときだけある
+  const passInput = document.getElementById("passphrase");
   const cancelBtn = document.getElementById("dl-cancel");
   const error = document.getElementById("dl-error");
   const errorText = document.getElementById("dl-error-text");
@@ -19,7 +21,8 @@
 
   if (!("showSaveFilePicker" in window) || !(size >= MIN_SIZE)) return;
 
-  const wsUrl = new URL(link.href.replace(/\/download$/, "/ws"));
+  const href = link.dataset.href;
+  const wsUrl = new URL(href.replace(/\/download$/, "/ws"), location.href);
   wsUrl.protocol = location.protocol === "https:" ? "wss:" : "ws:";
 
   const formatSize = (n) => {
@@ -30,6 +33,13 @@
   };
 
   let job = null;
+  let passphrase = "";
+
+  // 分割で受け取れないときの、今まで通りの 1 本のダウンロード
+  const fallback = () => {
+    if (form) form.submit(); // submit() は submit イベントを出さないので、ここへ戻ってこない
+    else location.href = href;
+  };
 
   const setBusy = (busy) => {
     link.hidden = busy;
@@ -53,7 +63,7 @@
       if (state.stopped || state.queue.length === 0) { ws.close(); return; }
       const [start, end] = state.queue.shift();
       current = { start, end, got: 0 };
-      ws.send(JSON.stringify({ start, end }));
+      ws.send(JSON.stringify({ start, end, passphrase }));
     };
     ws.addEventListener("open", () => { opened = true; state.anyOpened = true; next(); });
     ws.addEventListener("message", (ev) => {
@@ -156,7 +166,7 @@
     if (!state.anyOpened && !state.stopped) {
       await writable.abort();
       setBusy(false);
-      location.href = link.href; // 分割で受け取れない環境なので、普通のダウンロードに切り替える
+      fallback(); // 分割で受け取れない環境なので、普通のダウンロードに切り替える
       return;
     }
     if (state.stopped || state.received !== size) {
@@ -174,16 +184,39 @@
     text.textContent = `保存しました(${formatSize(size)}・${Math.round(sec)} 秒・${formatSize(size / sec)}/秒)`;
   };
 
-  link.addEventListener("click", async (e) => {
+  const begin = async (e) => {
     e.preventDefault();
     if (job) return;
     error.hidden = true;
+    if (form) {
+      // 合言葉が違うのに保存先を選ばせないよう、先に確かめる
+      passphrase = passInput.value;
+      let res;
+      try {
+        res = await fetch(href.replace(/\/download$/, "/check"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passphrase }),
+        });
+      } catch {
+        showError("通信できませんでした。回線を確かめて、もう一度押してください。");
+        return;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        passInput.setAttribute("aria-invalid", "true");
+        showError(data.error || "合言葉を確かめられませんでした。");
+        passInput.focus();
+        return;
+      }
+      passInput.removeAttribute("aria-invalid");
+    }
     let handle;
     try {
       handle = await window.showSaveFilePicker({ suggestedName: name });
     } catch (err) {
       if (err && err.name === "AbortError") return; // 保存先を選ばずに閉じた
-      location.href = link.href;
+      fallback();
       return;
     }
     try {
@@ -193,7 +226,9 @@
       setBusy(false);
       showError("保存先を開けませんでした。もう一度ダウンロードしてください。");
     }
-  });
+  };
+  if (form) form.addEventListener("submit", begin);
+  else link.addEventListener("click", begin);
 
   cancelBtn.addEventListener("click", () => {
     if (job) job.stop();

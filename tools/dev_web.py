@@ -30,11 +30,14 @@ async def on_uploaded(shared):
 ticket = store.create_ticket(guild_id=1, channel_id=1, user_id=1, minutes=600)
 file_id, part = store.new_part_path()
 part.write_bytes(b"sample" * 1000)
-sample = store.add_file(file_id, part, guild_id=1, channel_id=1, uploader_id=1, filename="合宿の写真まとめ_2026.zip", size=6000)
+sample = store.add_file(
+    file_id, part, guild_id=1, channel_id=1, uploader_id=1, filename="合宿の写真まとめ_2026.zip", size=6000, locked=False
+)
 # 分割ダウンロードを試すための 40MB の見本(中身は位置ごとに違うので、組み立て違いが分かる)
 big_id, big_part = store.new_part_path()
 big_part.write_bytes(bytes(i % 251 for i in range(40 * 1024 * 1024)))
 big = store.add_file(big_id, big_part, guild_id=1, channel_id=1, uploader_id=1, filename="動画まとめ.zip", size=40 * 1024 * 1024)
-print(f"アップロード: {base}/u/{ticket.token}\nダウンロード: {base}/f/{sample.id}\n大きい見本: {base}/f/{big.id}", flush=True)
+print(f"アップロード: {base}/u/{ticket.token}\nダウンロード(合言葉なし): {base}/f/{sample.id}", flush=True)
+print(f"大きい見本(合言葉 {big.passphrase}): {base}/f/{big.id}", flush=True)
 logging.basicConfig(level=logging.INFO)
 web.run_app(create_app(config, store, on_uploaded=on_uploaded), host="127.0.0.1", port=port)

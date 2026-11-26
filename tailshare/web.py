@@ -121,12 +121,13 @@ async def upload_page(request: web.Request) -> web.Response:
         )
     max_label = format_size(config.max_file_bytes)
     assert ticket is not None
+    what = "合言葉とダウンロード用の URL" if ticket.locked else "ダウンロード用の URL"
     if ticket.recipients:
         n = len(ticket.recipients)
-        lead_to = f"指定した {n} 人とあなたにだけ、Discord の DM で合言葉とダウンロード用の URL が届き"
+        lead_to = f"指定した {n} 人とあなたにだけ、Discord の DM で{what}が届き"
         done_note = f"指定した {n} 人とあなたに、DM で同じ内容を送りました。チャンネルには投稿していません。"
     else:
-        lead_to = "Discord のチャンネルに合言葉とダウンロード用の URL が投稿され"
+        lead_to = f"Discord のチャンネルに{what}が投稿され"
         done_note = "Discord のチャンネルにも同じ内容を投稿しました。"
     body = f"""<h1>ファイルを共有する</h1>
 <p class="ts-lead">共有したいファイルを 1 つ選んでください。{max_label} まで送れます。送ると{lead_to}、{config.keep_days} 日後に自動で消えます。</p>
@@ -227,6 +228,7 @@ async def receive_upload(request: web.Request) -> web.Response:
         channel_id=ticket.channel_id,
         uploader_id=ticket.user_id,
         recipients=ticket.recipients,
+        locked=ticket.locked,
         filename=filename,
         size=received,
     )
@@ -243,7 +245,7 @@ async def receive_upload(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "filename": shared.filename,
-            "passphrase": shared.passphrase,
+            "passphrase": shared.shown_passphrase,
             "url": file_url(config, shared.id),
             "expires": format_time(shared.expires_at),
         }
@@ -253,40 +255,65 @@ async def receive_upload(request: web.Request) -> web.Response:
 # --- ダウンロード ---
 
 
-async def download_page(request: web.Request) -> web.Response:
-    store = request.app[STORE_KEY]
-    shared = store.get_file(request.match_info["file_id"])
-    if shared is None:
-        return gone_page("ファイルが見つかりません", "期限が切れて消えたか、削除されました。共有した人に聞いてみてください。")
+GONE = ("ファイルが見つかりません", "期限が切れて消えたか、削除されました。共有した人に聞いてみてください。")
+WRONG_PASSPHRASE = "合言葉が違います。共有した人から届いた合言葉を、そのまま入れてください。"
+
+
+def render_download(shared: SharedFile, *, error: str | None = None, status: int = 200) -> web.Response:
     name = html.escape(shared.filename)
+    data = f'id="dl" data-size="{shared.size}" data-name="{name}" data-href="/f/{shared.id}/download"'
+    if shared.locked:
+        # 合言葉ありは POST で送らせる。合言葉を URL に載せると履歴に残るため
+        invalid = ' aria-invalid="true" aria-describedby="pass-error"' if error else ""
+        error_html = f'<p class="td-error" id="pass-error">{ICON_ERROR}<span>{html.escape(error)}</span></p>' if error else ""
+        action = f"""<form class="ts-stack" id="dl-form" method="post" action="/f/{shared.id}/download">
+  <div class="td-field">
+    <label class="td-label" for="passphrase">合言葉</label>
+    <input class="td-input" id="passphrase" name="passphrase" autocomplete="off" autocapitalize="off" spellcheck="false"
+           placeholder="例: kuma-sakura-neko-1234"{invalid}>
+    {error_html}
+  </div>
+  <div class="ts-actions">
+    <button class="td-btn" type="button" id="dl-cancel" hidden>やめる</button>
+    <button class="td-btn" data-variant="primary" type="submit" {data}>ダウンロード</button>
+  </div>
+</form>"""
+        note = "合言葉を知っている人だけがダウンロードできます。"
+    else:
+        action = f"""<div class="ts-actions">
+  <button class="td-btn" type="button" id="dl-cancel" hidden>やめる</button>
+  <a class="td-btn" data-variant="primary" href="/f/{shared.id}/download" download {data}>ダウンロード</a>
+</div>"""
+        note = "この URL を知っている人は、誰でもダウンロードできます。"
     body = f"""<h1 class="ts-filename">{name}</h1>
 <dl class="ts-facts">
   <dt>大きさ</dt><dd class="num">{format_size(shared.size)}</dd>
   <dt>期限</dt><dd class="num">{format_time(shared.expires_at)} まで</dd>
 </dl>
-<div class="ts-actions">
-  <button class="td-btn" type="button" id="dl-cancel" hidden>やめる</button>
-  <a class="td-btn" data-variant="primary" id="dl" href="/f/{shared.id}/download" download
-     data-size="{shared.size}" data-name="{name}">ダウンロード</a>
-</div>
+{action}
 <p class="td-error" id="dl-error" role="alert" hidden>{ICON_ERROR}<span id="dl-error-text"></span></p>
 <div class="ts-progress" id="dl-progress" hidden>
   <progress id="dl-bar" max="100" value="0" aria-label="ダウンロードの進み具合"></progress>
   <p class="ts-meta num" id="dl-text" aria-live="polite"></p>
 </div>
-<p class="ts-meta">この URL を知っている人は、誰でもダウンロードできます。</p>
+<p class="ts-meta">{note}</p>
 """
-    resp = page(shared.filename, body, script="download.js")
+    resp = page(shared.filename, body, script="download.js", status=status)
     resp.headers["Cache-Control"] = "private, no-store"
     return resp
 
 
-async def download_file(request: web.Request) -> web.StreamResponse:
-    store = request.app[STORE_KEY]
-    shared = store.get_file(request.match_info["file_id"])
-    path = store.path_of(shared.id) if shared else None
-    if shared is None or path is None or not path.exists():
-        return gone_page("ファイルが見つかりません", "期限が切れて消えたか、削除されました。共有した人に聞いてみてください。")
+async def download_page(request: web.Request) -> web.Response:
+    shared = request.app[STORE_KEY].get_file(request.match_info["file_id"])
+    if shared is None:
+        return gone_page(*GONE)
+    return render_download(shared)
+
+
+def send_file(store: Store, shared: SharedFile) -> web.StreamResponse:
+    path = store.path_of(shared.id)
+    if not path.exists():
+        return gone_page(*GONE)
     # 中身が HTML でもブラウザに表示させず、必ず保存させる
     ascii_name = shared.filename.encode("ascii", "replace").decode().replace('"', "_").replace("?", "_")
     return web.FileResponse(
@@ -296,6 +323,42 @@ async def download_file(request: web.Request) -> web.StreamResponse:
             "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(shared.filename)}",
         },
     )
+
+
+async def download_file(request: web.Request) -> web.StreamResponse:
+    store = request.app[STORE_KEY]
+    shared = store.get_file(request.match_info["file_id"])
+    if shared is None:
+        return gone_page(*GONE)
+    if shared.locked:
+        # 合言葉ありは、ページの欄から POST で送ってもらう
+        raise web.HTTPSeeOther(f"/f/{shared.id}")
+    return send_file(store, shared)
+
+
+async def download_with_passphrase(request: web.Request) -> web.StreamResponse:
+    store = request.app[STORE_KEY]
+    shared = store.get_file(request.match_info["file_id"])
+    if shared is None:
+        return gone_page(*GONE)
+    form = await request.post()
+    if not shared.check_passphrase(str(form.get("passphrase", ""))):
+        return render_download(shared, error=WRONG_PASSPHRASE, status=403)
+    return send_file(store, shared)
+
+
+async def check_passphrase(request: web.Request) -> web.Response:
+    """分割ダウンロードの前に、保存先を選ばせる前に合言葉だけ確かめる(download.js から呼ぶ)。"""
+    shared = request.app[STORE_KEY].get_file(request.match_info["file_id"])
+    if shared is None:
+        return json_error(404, GONE[1])
+    try:
+        text = str((await request.json()).get("passphrase", ""))
+    except (ValueError, AttributeError):
+        return json_error(400, WRONG_PASSPHRASE)
+    if not shared.check_passphrase(text):
+        return json_error(403, WRONG_PASSPHRASE)
+    return web.json_response({"ok": True})
 
 
 async def download_ws(request: web.Request) -> web.StreamResponse:
@@ -319,11 +382,15 @@ async def download_ws(request: web.Request) -> web.StreamResponse:
         try:
             req = json.loads(msg.data)
             start, end = int(req["start"]), int(req["end"])
-        except (ValueError, KeyError, TypeError):
+            passphrase = str(req.get("passphrase", ""))
+        except (ValueError, KeyError, TypeError, AttributeError):
             await ws.close(code=4400, message=b"bad request")
             break
         if shared is None:
             await ws.close(code=4404, message=b"gone")
+            break
+        if not shared.check_passphrase(passphrase):
+            await ws.close(code=4403, message=b"wrong passphrase")
             break
         if not (0 <= start < end <= shared.size and end - start <= WS_MAX_RANGE):
             await ws.close(code=4416, message=b"bad range")
@@ -396,6 +463,8 @@ def create_app(config: Config, store: Store, on_uploaded: OnUploaded | None = No
     app.router.add_put("/u/{token}", receive_upload)
     app.router.add_get("/f/{file_id}", download_page)
     app.router.add_get("/f/{file_id}/download", download_file)
+    app.router.add_post("/f/{file_id}/download", download_with_passphrase)
+    app.router.add_post("/f/{file_id}/check", check_passphrase)
     app.router.add_get("/f/{file_id}/ws", download_ws)
     app.router.add_get("/", index)
     app.router.add_get("/robots.txt", robots)

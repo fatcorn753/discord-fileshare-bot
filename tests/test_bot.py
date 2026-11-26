@@ -33,8 +33,9 @@ def test_commands_register(tmp_path):
     names = {c["name"] for c in payload}
     assert names == {"アップ", "受け取り", "削除", "一覧", "help"}
     up = next(c for c in payload if c["name"] == "アップ")
-    assert [o["name"] for o in up["options"]] == ["ファイル", "対象"]
+    assert [o["name"] for o in up["options"]] == ["ファイル", "対象", "合言葉"]
     assert [c["name"] for c in up["options"][1]["choices"]] == ["全員", "個別"]
+    assert [c["name"] for c in up["options"][2]["choices"]] == ["あり", "なし"]
     assert all(o["required"] is False for o in up["options"])
 
     file_id, part = store.new_part_path()
@@ -84,3 +85,14 @@ def test_help_text_uses_config():
     assert "3 日" in text and "512.0 MB" in text and "15 分" in text
     assert all(f"/{name}" in text for name in ["アップ", "受け取り", "一覧", "削除"])
     assert len(text) <= 2000  # Discord の 1 メッセージの上限
+
+
+def test_describe_without_passphrase(tmp_path):
+    config = parse_config({"token": TOKEN, "base_url": "https://share.example.ts.net"})
+    store = Store(tmp_path, keep_days=14)
+    file_id, part = store.new_part_path()
+    part.write_bytes(b"x")
+    shared = store.add_file(file_id, part, guild_id=1, channel_id=2, uploader_id=3, filename="a.zip", size=1, locked=False)
+    text = describe(config, shared)
+    assert "合言葉: なし" in text and shared.passphrase not in text
+    store.close()

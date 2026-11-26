@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hmac
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -24,7 +25,10 @@ CREATE TABLE IF NOT EXISTS files (
     size        INTEGER NOT NULL,
     created_at  INTEGER NOT NULL,
     expires_at  INTEGER NOT NULL,
-    recipients  TEXT NOT NULL DEFAULT ''  -- 個別に送った相手のユーザー ID(カンマ区切り)。空なら全員向け
+    recipients  TEXT NOT NULL DEFAULT '',  -- 個別に送った相手のユーザー ID(カンマ区切り)。空なら全員向け
+    -- 1 なら、URL からダウンロードするときに合言葉を求める。0(合言葉なし)でも passphrase は入れておき、
+    -- /受け取り と /削除 でファイルを選ぶための内部の鍵として使う(画面には出さない)
+    locked      INTEGER NOT NULL DEFAULT 1
 );
 CREATE UNIQUE INDEX IF NOT EXISTS files_guild_passphrase ON files (guild_id, passphrase);
 CREATE INDEX IF NOT EXISTS files_expires ON files (expires_at);
@@ -45,7 +49,8 @@ CREATE TABLE IF NOT EXISTS tickets (
     user_id    INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     state      TEXT NOT NULL DEFAULT 'open',
-    recipients TEXT NOT NULL DEFAULT ''
+    recipients TEXT NOT NULL DEFAULT '',
+    locked     INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -65,6 +70,17 @@ class SharedFile:
     created_at: int
     expires_at: int
     recipients: tuple[int, ...] = ()
+    locked: bool = True
+
+    @property
+    def shown_passphrase(self) -> str | None:
+        """画面や投稿に出す合言葉。合言葉なしのファイルは None。"""
+        return self.passphrase if self.locked else None
+
+    def check_passphrase(self, text: str) -> bool:
+        if not self.locked:
+            return True
+        return hmac.compare_digest(normalize_passphrase(text).encode(), self.passphrase.encode())
 
     @property
     def is_private(self) -> bool:
@@ -84,6 +100,7 @@ class Ticket:
     expires_at: int
     state: str
     recipients: tuple[int, ...] = ()
+    locked: bool = False
 
 
 def pack_ids(ids) -> str:
@@ -95,11 +112,11 @@ def unpack_ids(text: str) -> tuple[int, ...]:
 
 
 def to_file(row: sqlite3.Row) -> SharedFile:
-    return SharedFile(**{**dict(row), "recipients": unpack_ids(row["recipients"])})
+    return SharedFile(**{**dict(row), "recipients": unpack_ids(row["recipients"]), "locked": bool(row["locked"])})
 
 
 def to_ticket(row: sqlite3.Row) -> Ticket:
-    return Ticket(**{**dict(row), "recipients": unpack_ids(row["recipients"])})
+    return Ticket(**{**dict(row), "recipients": unpack_ids(row["recipients"]), "locked": bool(row["locked"])})
 
 
 class Store:
@@ -121,6 +138,10 @@ class Store:
             cols = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
             if "recipients" not in cols:
                 self._db.execute(f"ALTER TABLE {table} ADD COLUMN recipients TEXT NOT NULL DEFAULT ''")
+            # 合言葉の有無の列がない DB(0.2.0 まで)。それまでのファイルは合言葉が出ていたので、あり扱いにする
+            if "locked" not in cols:
+                default = 1 if table == "files" else 0
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN locked INTEGER NOT NULL DEFAULT {default}")
 
     def now(self) -> int:
         return int(self._clock())
@@ -151,6 +172,7 @@ class Store:
         filename: str,
         size: int,
         recipients: tuple[int, ...] = (),
+        locked: bool = True,
     ) -> SharedFile:
         part_path.rename(self.path_of(file_id))
         now = self.now()
@@ -160,7 +182,7 @@ class Store:
                 with self._db:
                     self._db.execute(
                         "INSERT INTO files (id, passphrase, guild_id, channel_id, uploader_id, filename, size,"
-                        " created_at, expires_at, recipients) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        " created_at, expires_at, recipients, locked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             file_id,
                             passphrase,
@@ -172,6 +194,7 @@ class Store:
                             now,
                             now + self.keep_seconds,
                             pack_ids(recipients),
+                            int(locked),
                         ),
                     )
             except sqlite3.IntegrityError:
@@ -241,13 +264,21 @@ class Store:
     # --- アップロード用リンク ---
 
     def create_ticket(
-        self, *, guild_id: int, channel_id: int, user_id: int, minutes: int, recipients: tuple[int, ...] = ()
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+        user_id: int,
+        minutes: int,
+        recipients: tuple[int, ...] = (),
+        locked: bool = False,
     ) -> Ticket:
         token = new_id()
         with self._db:
             self._db.execute(
-                "INSERT INTO tickets (token, guild_id, channel_id, user_id, expires_at, recipients) VALUES (?, ?, ?, ?, ?, ?)",
-                (token, guild_id, channel_id, user_id, self.now() + minutes * 60, pack_ids(recipients)),
+                "INSERT INTO tickets (token, guild_id, channel_id, user_id, expires_at, recipients, locked)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (token, guild_id, channel_id, user_id, self.now() + minutes * 60, pack_ids(recipients), int(locked)),
             )
         return self.get_ticket(token)  # type: ignore[return-value]
 

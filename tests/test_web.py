@@ -173,7 +173,7 @@ def test_download_ws_ranges(env):
         ws = await client.ws_connect(f"/f/{shared.id}/ws")
         got = bytearray()
         for start, end in [(0, 300_000), (300_000, len(data))]:
-            await ws.send_json({"start": start, "end": end})
+            await ws.send_json({"start": start, "end": end, "passphrase": shared.passphrase})
             piece = bytearray()
             while len(piece) < end - start:
                 piece += await ws.receive_bytes()
@@ -182,7 +182,7 @@ def test_download_ws_ranges(env):
         assert bytes(got) == data
 
         # 範囲の外を頼むと切られる
-        await ws.send_json({"start": 0, "end": len(data) + 1})
+        await ws.send_json({"start": 0, "end": len(data) + 1, "passphrase": shared.passphrase})
         msg = await ws.receive()
         assert msg.type.name in ("CLOSE", "CLOSED") and ws.close_code == 4416
 
@@ -194,9 +194,68 @@ def test_download_ws_ranges(env):
         # 消したファイルは、つないだ後でも送らない
         alive = await client.ws_connect(f"/f/{shared.id}/ws")
         store.delete_file(shared.id)
-        await alive.send_json({"start": 0, "end": 10})
+        await alive.send_json({"start": 0, "end": 10, "passphrase": shared.passphrase})
         await alive.receive()
         assert alive.close_code == 4404
         assert (await client.get(f"/f/{shared.id}/ws")).status == 404
+
+    run(with_client(config, store, scenario))
+
+
+def test_passphrase_required_for_locked_file(env):
+    config, store = env
+    file_id, part = store.new_part_path()
+    part.write_bytes(b"secret-zip")
+    locked = store.add_file(file_id, part, guild_id=1, channel_id=2, uploader_id=3, filename="l.zip", size=10)
+    file_id2, part2 = store.new_part_path()
+    part2.write_bytes(b"open")
+    free = store.add_file(file_id2, part2, guild_id=1, channel_id=2, uploader_id=3, filename="f.zip", size=4, locked=False)
+    assert locked.locked and not free.locked
+
+    async def scenario(client):
+        page = await (await client.get(f"/f/{locked.id}")).text()
+        assert 'id="dl-form"' in page and 'name="passphrase"' in page
+        # GET では落とせず、ページへ戻される
+        get = await client.get(f"/f/{locked.id}/download", allow_redirects=False)
+        assert get.status == 303 and get.headers["Location"] == f"/f/{locked.id}"
+        wrong = await client.post(f"/f/{locked.id}/download", data={"passphrase": "nope"})
+        assert wrong.status == 403 and "合言葉が違います" in await wrong.text()
+        # 大文字・空白・全角でも通る
+        loose = locked.passphrase.upper().replace("-", " ")
+        ok = await client.post(f"/f/{locked.id}/download", data={"passphrase": loose})
+        assert ok.status == 200 and await ok.read() == b"secret-zip"
+
+        assert (await client.post(f"/f/{locked.id}/check", json={"passphrase": "x"})).status == 403
+        assert (await client.post(f"/f/{locked.id}/check", json={"passphrase": locked.passphrase})).status == 200
+        assert (await client.post(f"/f/{locked.id}/check", data=b"[")).status == 400
+
+        ws = await client.ws_connect(f"/f/{locked.id}/ws")
+        await ws.send_json({"start": 0, "end": 5, "passphrase": "x"})
+        await ws.receive()
+        assert ws.close_code == 4403
+
+        # 合言葉なしは今まで通り
+        free_page = await (await client.get(f"/f/{free.id}")).text()
+        assert 'id="dl-form"' not in free_page and "誰でもダウンロードできます" in free_page
+        assert await (await client.get(f"/f/{free.id}/download")).read() == b"open"
+        ws2 = await client.ws_connect(f"/f/{free.id}/ws")
+        await ws2.send_json({"start": 0, "end": 4})
+        assert await ws2.receive_bytes() == b"open"
+
+    run(with_client(config, store, scenario))
+
+
+def test_upload_with_and_without_passphrase(env):
+    config, store = env
+    on = store.create_ticket(guild_id=1, channel_id=2, user_id=3, minutes=10, locked=True)
+    off = store.create_ticket(guild_id=1, channel_id=2, user_id=3, minutes=10)
+
+    async def scenario(client):
+        assert "合言葉とダウンロード用" in await (await client.get(f"/u/{on.token}")).text()
+        assert "合言葉と" not in await (await client.get(f"/u/{off.token}")).text()
+        a = await (await client.put(f"/u/{on.token}", data=b"a", headers={"X-Filename": "a"})).json()
+        b = await (await client.put(f"/u/{off.token}", data=b"b", headers={"X-Filename": "b"})).json()
+        assert a["passphrase"] and len(a["passphrase"].split("-")) == 4
+        assert b["passphrase"] is None
 
     run(with_client(config, store, scenario))

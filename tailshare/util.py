@@ -17,7 +17,9 @@ WORDS = (
 
 
 def new_passphrase() -> str:
-    return f"{secrets.choice(WORDS)}-{secrets.choice(WORDS)}-{secrets.randbelow(90) + 10}"
+    # 88 語 × 88 語 × 88 語 × 9000 ≒ 61 億通り。試す回数を制限しなくても、7 日のうちに総当たりでは当たらない
+    words = "-".join(secrets.choice(WORDS) for _ in range(3))
+    return f"{words}-{secrets.randbelow(9000) + 1000}"
 
 
 def normalize_passphrase(text: str) -> str:

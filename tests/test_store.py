@@ -178,6 +178,15 @@ def test_migrate_old_db(tmp_path):
     s = Store(tmp_path, keep_days=14)
     old = s.get_file("old")
     assert old is not None and old.recipients == () and old.visible_to(99)
+    # それまでのファイルは合言葉が出ていたので、合言葉あり扱い
+    assert old.locked and not old.check_passphrase("x") and old.check_passphrase("A B 10")
     t = s.create_ticket(guild_id=1, channel_id=2, user_id=3, minutes=10, recipients=(5,))
     assert t.recipients == (5,)
     s.close()
+
+
+def test_new_passphrase_shape():
+    from tailshare.util import WORDS, new_passphrase
+
+    *words, num = new_passphrase().split("-")
+    assert len(words) == 3 and all(w in WORDS for w in words) and 1000 <= int(num) <= 9999
