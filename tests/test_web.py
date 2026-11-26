@@ -157,3 +157,46 @@ def test_user_quota_and_headers(tmp_path):
     run(with_client(config, store, scenario))
     assert store.user_usage(3) == 700_000 and store.open_ticket_count(3) == 1
     store.close()
+
+
+def test_download_ws_ranges(env):
+    config, store = env
+    data = bytes(range(256)) * 4000  # 1,024,000 バイト。256KB の区切りをまたぐ
+    file_id, part = store.new_part_path()
+    part.write_bytes(data)
+    shared = store.add_file(file_id, part, guild_id=1, channel_id=2, uploader_id=3, filename="a.zip", size=len(data))
+
+    async def scenario(client):
+        page = await (await client.get(f"/f/{shared.id}")).text()
+        assert 'data-size="1024000"' in page and "download.js" in page
+
+        ws = await client.ws_connect(f"/f/{shared.id}/ws")
+        got = bytearray()
+        for start, end in [(0, 300_000), (300_000, len(data))]:
+            await ws.send_json({"start": start, "end": end})
+            piece = bytearray()
+            while len(piece) < end - start:
+                piece += await ws.receive_bytes()
+            assert len(piece) == end - start
+            got += piece
+        assert bytes(got) == data
+
+        # 範囲の外を頼むと切られる
+        await ws.send_json({"start": 0, "end": len(data) + 1})
+        msg = await ws.receive()
+        assert msg.type.name in ("CLOSE", "CLOSED") and ws.close_code == 4416
+
+        bad = await client.ws_connect(f"/f/{shared.id}/ws")
+        await bad.send_str("nope")
+        await bad.receive()
+        assert bad.close_code == 4400
+
+        # 消したファイルは、つないだ後でも送らない
+        alive = await client.ws_connect(f"/f/{shared.id}/ws")
+        store.delete_file(shared.id)
+        await alive.send_json({"start": 0, "end": 10})
+        await alive.receive()
+        assert alive.close_code == 4404
+        assert (await client.get(f"/f/{shared.id}/ws")).status == 404
+
+    run(with_client(config, store, scenario))

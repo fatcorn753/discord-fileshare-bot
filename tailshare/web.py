@@ -3,12 +3,14 @@
 公開されるのはここだけ。ログインはなく、URL に入った推測できない ID を知っている人だけが使える。
 - /u/<リンクの ID>   アップロード用ページ(Discord の /アップ で本人にだけ渡す。1 回だけ使える)
 - /f/<ファイルの ID> ダウンロード用ページ
+- /f/<ファイルの ID>/ws  分割ダウンロード用の WebSocket(download.js が何本も同時に開く)
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import shutil
 from collections.abc import Awaitable, Callable
@@ -41,6 +43,10 @@ DISK_FULL = "サーバーの空き容量が足りません。古いファイル�
 
 
 MAX_OPEN_TICKETS = 5
+
+# 分割ダウンロードで 1 回に頼める大きさの上限と、1 本の WebSocket で送る 1 通の大きさ
+WS_MAX_RANGE = 16 * 1024 * 1024
+WS_FRAME = 256 * 1024
 
 
 def has_room(store: Store, config: Config, size: int) -> bool:
@@ -259,11 +265,18 @@ async def download_page(request: web.Request) -> web.Response:
   <dt>期限</dt><dd class="num">{format_time(shared.expires_at)} まで</dd>
 </dl>
 <div class="ts-actions">
-  <a class="td-btn" data-variant="primary" href="/f/{shared.id}/download" download>ダウンロード</a>
+  <button class="td-btn" type="button" id="dl-cancel" hidden>やめる</button>
+  <a class="td-btn" data-variant="primary" id="dl" href="/f/{shared.id}/download" download
+     data-size="{shared.size}" data-name="{name}">ダウンロード</a>
+</div>
+<p class="td-error" id="dl-error" role="alert" hidden>{ICON_ERROR}<span id="dl-error-text"></span></p>
+<div class="ts-progress" id="dl-progress" hidden>
+  <progress id="dl-bar" max="100" value="0" aria-label="ダウンロードの進み具合"></progress>
+  <p class="ts-meta num" id="dl-text" aria-live="polite"></p>
 </div>
 <p class="ts-meta">この URL を知っている人は、誰でもダウンロードできます。</p>
 """
-    resp = page(shared.filename, body)
+    resp = page(shared.filename, body, script="download.js")
     resp.headers["Cache-Control"] = "private, no-store"
     return resp
 
@@ -283,6 +296,48 @@ async def download_file(request: web.Request) -> web.StreamResponse:
             "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(shared.filename)}",
         },
     )
+
+
+async def download_ws(request: web.Request) -> web.StreamResponse:
+    """分割ダウンロード。{"start": n, "end": m} を受け取るたびに、その範囲を 256KB ずつ送る。
+
+    ブラウザは同じサイトへの fetch を 1 本の HTTP/2 接続にまとめるが、Funnel は 1 接続あたりの速さが
+    頭打ちになる。Funnel は HTTP/2 の上で WebSocket を張らせない(RFC 8441 を有効にしていない)ため、
+    WebSocket は 1 本ずつ別の接続になり、並べると速くなる。
+    """
+    store = request.app[STORE_KEY]
+    file_id = request.match_info["file_id"]
+    if store.get_file(file_id) is None:
+        raise web.HTTPNotFound()
+    ws = web.WebSocketResponse(heartbeat=30, max_msg_size=4096)
+    await ws.prepare(request)
+    loop = asyncio.get_running_loop()
+    async for msg in ws:
+        if msg.type is not web.WSMsgType.TEXT:
+            break
+        shared = store.get_file(file_id)  # 送っている間に期限切れ・削除になったら止める
+        try:
+            req = json.loads(msg.data)
+            start, end = int(req["start"]), int(req["end"])
+        except (ValueError, KeyError, TypeError):
+            await ws.close(code=4400, message=b"bad request")
+            break
+        if shared is None:
+            await ws.close(code=4404, message=b"gone")
+            break
+        if not (0 <= start < end <= shared.size and end - start <= WS_MAX_RANGE):
+            await ws.close(code=4416, message=b"bad range")
+            break
+        with open(store.path_of(file_id), "rb") as f:
+            f.seek(start)
+            left = end - start
+            while left > 0:
+                data = await loop.run_in_executor(None, f.read, min(WS_FRAME, left))
+                if not data:
+                    break
+                await ws.send_bytes(data)
+                left -= len(data)
+    return ws
 
 
 async def index(_: web.Request) -> web.Response:
@@ -341,6 +396,7 @@ def create_app(config: Config, store: Store, on_uploaded: OnUploaded | None = No
     app.router.add_put("/u/{token}", receive_upload)
     app.router.add_get("/f/{file_id}", download_page)
     app.router.add_get("/f/{file_id}/download", download_file)
+    app.router.add_get("/f/{file_id}/ws", download_ws)
     app.router.add_get("/", index)
     app.router.add_get("/robots.txt", robots)
     app.router.add_static("/static/", STATIC_DIR)
